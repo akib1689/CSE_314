@@ -9,13 +9,14 @@
 #echo students_id, score in a file
 echo "students_id, score" > output.csv
 
-files=$(ls submissions)         # list the files in the directory submissions
+files=$(ls Submissions)         # list the files in the directory submissions
 
 
 for file_1 in $files; do        # for each file in the directory
     if [ -d Submissions/$file_1 ]; then         # if the file is a directory proceed
-        chmod 552 Submissions/$file_1;                  # give the permission to execute and read
-        chmod 552 Submissions/$file_1/$file_1.sh;       # give the permission to execute and read
+        chmod 554 Submissions/$file_1;                  # give the permission to execute permission to owner and group 
+                                                        # and readpermission to all (folder)
+        chmod 554 Submissions/$file_1/$file_1.sh;       # same permission to sh files....
 
         # execute the file and save the output in a file
         Submissions/$file_1/$file_1.sh > Submissions/$file_1.txt;
