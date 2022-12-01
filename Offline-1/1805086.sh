@@ -1,3 +1,4 @@
+#!/bin/bash
 # At first list the files in the directory submissions
 # Then, for each file in the directory, give the permission to execute
 # Then, for each file in the directory, execute the file and save the output in a file
