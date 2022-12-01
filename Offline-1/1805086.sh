@@ -6,13 +6,35 @@
 # Then, for each file in the directory, remove the file
 
 
-#echo students_id, score in a file
+#echo students_id, score in a otuput file
 echo "students_id, score" > output.csv
+
+#take the arguments from the command line
+#the first argument is the max score
+#the second argument is the last character of the students_id
+
+if [ $# -eq 2 ]; then
+    max_score=$1
+    last_char=$2
+elif [ $# -eq 1 ]; then
+    max_score=$1
+    last_char=5
+else
+    max_score=100
+    last_char=5
+fi
 
 files=$(ls Submissions)         # list the files in the directory submissions
 
 
 for file_1 in $files; do        # for each file in the directory
+    #if the file is greater than the specified last character of the students_id
+    #then, continue to the next file (do not execute the file)
+    if [ ${file_1: -1} -gt $last_char ]; then
+        continue
+    fi
+    
+
     if [ -d Submissions/$file_1 ] && [ -f Submissions/$file_1/$file_1.sh ]; then         # if the file is a directory proceed
         echo $file_1
         chmod 554 Submissions/$file_1;                  # give the permission to execute permission to owner and group 
@@ -31,11 +53,9 @@ for file_1 in $files; do        # for each file in the directory
 
         rm Submissions/$file_1.txt;                 # remove the output file
         rm Submissions/$file_1-diff.txt;            # remove the diff file
-        if [ $# -eq 1 ]; then                # if the number of arguments is 1
-            score=$(($1 - $val));            # subtract the number of differences from given score
-        else
-            score=$((100 - $val));           # subtract the number of differences from 100
-        fi
+        
+        score=$(($max_score-$val));                 # calculate the score
+
         if [ $score -lt 0 ]; then           # if the score is less than 0
             score=0;                        # set the score to 0
         fi
@@ -60,6 +80,7 @@ for file_1 in $files; do        # for each file in the directory
             fi
         done
     else
+        echo "No file $file_1.sh in $file_1 directory Student $file_1 is not graded"
         score=0;            # if the file is not a directory or there is no sh file in the directory, set the score to 0
     fi
 
