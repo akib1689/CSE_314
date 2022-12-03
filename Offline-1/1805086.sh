@@ -27,17 +27,29 @@ fi
 
 files=$(ls Submissions)         # list the files in the directory submissions
 
+count=0                         # this will detect if there is no file submitted for the assignment
+
 
 for file_1 in $files; do        # for each file in the directory
+    count=$((count+1))          # increment the count
     #if the file is greater than the specified last character of the students_id
     #then, continue to the next file (do not execute the file)
     if [ ${file_1: -1} -gt $last_char ]; then
         continue
     fi
+
+    #if count and the last character of the students_id are not equal
+    #if count < last character of the students_id               :give the student 0
+    if [ $count -ne ${file_1: -1} ]; then
+        if [ $count -lt ${file_1: -1} ]; then
+            echo "180512"$count, 0 >> output.csv
+            count=$((count+1))
+        fi
+    fi
+    
     
 
     if [ -d Submissions/$file_1 ] && [ -f Submissions/$file_1/$file_1.sh ]; then         # if the file is a directory proceed
-        echo $file_1
         chmod 554 Submissions/$file_1;                  # give the permission to execute permission to owner and group 
                                                         # and readpermission to all (folder)
         chmod 554 Submissions/$file_1/$file_1.sh;       # same permission to sh files....
