@@ -4,8 +4,7 @@
 #include "user/user.h"
 
 int
-main(int argc, char *argv[])
-{
+main(int argc, char *argv[]) {
   int i;
   char *nargv[MAXARG];
 
