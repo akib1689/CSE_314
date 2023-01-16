@@ -1,0 +1,2 @@
+The assignment specification is given in the following github link:
+https://github.com/Tahmid04/xv6-scheduling-july-2022.git
