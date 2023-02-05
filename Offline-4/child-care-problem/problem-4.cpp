@@ -1,87 +1,54 @@
-#include <pthread.h>
-#include <semaphore.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
+#include "zemlock.h"
+#include <iostream>
 
-#define MAX_CHILDREN 3
-#define NUM_ADULTS 2
-#define NUM_CHILDREN 6
+using namespace std;
 
-sem_t adult_sem;
-sem_t child_sem;
-sem_t mutex;
-int children = 0;
+// adult thread
+// step 1: enters the room (the capacity of the room goes up by 3)
+// as each adult can look after 3 children
+// step 2: works (counts to 10000000)
+// step 3: leaves the room
+void *adult(void *arg) {
 
-void *adult_thread(void *arg) {
-    int id = *(int *)arg;
+    lock_t *lock = (lock_t *) arg;
 
-    while (1) {
-        sem_wait(&adult_sem);
-        sem_wait(&mutex);
+    // step 1
+    lock_post(lock, 3);
 
-        children += 3;
-        printf("Adult %d entered, children now = %d\n", id, children);
+    printf("adult entered the room");
 
-        sem_post(&child_sem);
-        sem_post(&child_sem);
-        sem_post(&child_sem);
+    // step 2
+    for (int i = 0; i < 10000000; i++);
 
-        sem_post(&mutex);
-    }
+    printf("adult worked");
+    // step 3
+    lock_wait(lock, 3);
 
-    return NULL;
+    printf("adult left the room");
 }
 
-void *child_thread(void *arg) {
-    int id = *(int *)arg;
 
-    while (1) {
-        sem_wait(&child_sem);
-        sem_wait(&mutex);
+// child thread
+// step 1: enters the room (the capacity of the room goes down by 1)
+// step 2: works (counts to 10000000)
+// step 3: leaves the room
+void *child(void *arg) {
 
-        children--;
-        printf("Child %d left, children now = %d\n", id, children);
+    lock_t *lock = (lock_t *) arg;
 
-        sem_post(&adult_sem);
 
-        sem_post(&mutex);
-    }
+    printf("child trying to enter the room");
+    // step 1
+    lock_wait(lock);
 
-    return NULL;
-}
+    printf("child entered the room");
+    // step 2
+    for (int i = 0; i < 10000000; i++);
 
-int main(void) {
-    pthread_t adult_tid[NUM_ADULTS];
-    pthread_t child_tid[NUM_CHILDREN];
+    printf("child worked");
+    // step 3
+    lock_post(lock);
 
-    sem_init(&adult_sem, 0, NUM_ADULTS);
-    sem_init(&child_sem, 0, 0);
-    sem_init(&mutex, 0, 1);
+    printf("child left the room");
 
-    for (int i = 0; i < NUM_ADULTS; i++) {
-        int *id = malloc(sizeof(int));
-        *id = i;
-        pthread_create(&adult_tid[i], NULL, adult_thread, id);
-    }
-
-    for (int i = 0; i < NUM_CHILDREN; i++) {
-        int *id = malloc(sizeof(int));
-        *id = i;
-        pthread_create(&child_tid[i], NULL, child_thread, id);
-    }
-
-    for (int i = 0; i < NUM_ADULTS; i++) {
-        pthread_join(adult_tid[i], NULL);
-    }
-
-    for (int i = 0; i < NUM_CHILDREN; i++) {
-        pthread_join(child_tid[i], NULL);
-    }
-
-    sem_destroy(&adult_sem);
-    sem_destroy(&child_sem);
-    sem_destroy(&mutex);
-
-    return 0;
 }

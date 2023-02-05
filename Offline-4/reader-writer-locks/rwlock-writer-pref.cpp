@@ -51,20 +51,26 @@ void WriterLock(read_write_lock *rw) {
 }
 
 void ReaderUnlock(read_write_lock *rw) {
+  // lock the mutex 
   pthread_mutex_lock(&rw->lock);
   rw->readers--;
   if (rw->readers == 0 && rw->write_waiters > 0) {
+    // if there are no readers and there are writers waiting, 
+    // then wake up a writer
     pthread_cond_signal(&rw->write);
   }
   pthread_mutex_unlock(&rw->lock);
 }
 
 void WriterUnlock(read_write_lock *rw) {
+  // lock the mutex
   pthread_mutex_lock(&rw->lock);
   rw->writers--;
   if (rw->write_waiters > 0) {
+    // There are writers waiting, then wake up a writer
     pthread_cond_signal(&rw->write);
   } else {
+    // There are no writers waiting, then wake up all readers
     pthread_cond_broadcast(&rw->read);
   }
   pthread_mutex_unlock(&rw->lock);
