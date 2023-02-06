@@ -1,16 +1,17 @@
 /**
  * header file for zemlock.c
- * contains struct lock 
+ * contains struct lock
  * has zem_t variable
  * has mutex for protecting the zem_t variable
-*/
+ */
 
 #ifndef ZEMLOCK_H
-#define ZEMLOCK_H 
+#define ZEMLOCK_H
 
-#include "../zemaphore/zemaphore.h"
+#include "../../zemaphore/zemaphore.h"
 
-typedef struct {
+typedef struct
+{
     zem_t zem;
     pthread_mutex_t mutex;
 } lock_t;
