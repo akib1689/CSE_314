@@ -1,12 +1,7 @@
 #include "zemaphore.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
 #include <string.h>
-#include <errno.h>
-#include <signal.h>
-#include <wait.h>
-#include <pthread.h>
 
 using namespace std;
 
@@ -22,10 +17,11 @@ void *adult(void *arg)
 {
 
     int *adult_id = (int *)arg;
-    printf("adult %d entered the room\n", (*adult_id));
 
+    char * msg = (char *)malloc(sizeof(char) * 100);
+    sprintf(msg, "adult %d entered the room", (*adult_id));
     // step 1
-    zem_up_n(lock, 3);
+    zem_up_n(lock, 3, msg);
 
     // step 2
     for (int i = 0; i < 10000000; i++)
@@ -33,11 +29,10 @@ void *adult(void *arg)
 
     printf("adult %d worked\n", (*adult_id));
     // step 3
-    zem_down_n(lock, 3);
+    sprintf(msg, "adult %d left the room", (*adult_id));
+    zem_down_n(lock, 3, msg);
 
-    printf("adult %d left the room\n", (*adult_id));
-
-    // return NULL;
+    return NULL;
 }
 
 // child thread
@@ -46,25 +41,27 @@ void *adult(void *arg)
 // step 3: leaves the room
 void *child(void *arg)
 {
-    // printf("child\n");
 
     int *child_id = (int *)arg;
     // lock_t *lock = (lock_t *)arg;
 
     printf("child %d trying to enter the room\n", (*child_id));
+    char * msg = (char *)malloc(sizeof(char) * 100);
+    sprintf(msg, "child %d entered the room", (*child_id));
     // step 1
-    zem_down(lock);
+    zem_down(lock, msg);
 
-    printf("child %d entered the room\n", (*child_id));
+    // printf("child %d entered the room\n", (*child_id));
     // step 2
     for (int i = 0; i < 10000000; i++)
         ;
 
     printf("child %d worked\n", (*child_id));
+    sprintf(msg, "child %d left the room", (*child_id));
     // step 3
-    zem_up(lock);
+    zem_up(lock, msg);
 
-    printf("child %d left the room\n", (*child_id));
+    return NULL;
 }
 
 int main(int argc, char *argv[])
@@ -104,13 +101,13 @@ int main(int argc, char *argv[])
     for (int i = 0; i < num_child; i++)
     {
         pthread_join(child_thread[i], NULL);
-        printf("child %d has finished\n", child_thread_id[i]);
+        // printf("child %d has finished\n", child_thread_id[i]);
     }
 
     for (int i = 0; i < num_parent; i++)
     {
         pthread_join(parent_thread[i], NULL);
-        printf("adult %d has finished\n", parent_thread_id[i]);
+        // printf("adult %d has finished\n", parent_thread_id[i]);
     }
 
     free(child_thread);

@@ -7,6 +7,8 @@
 #include <wait.h>
 #include "zemaphore.h"
 
+using namespace std;
+
 void zem_init(zem_t *s, int value)
 {
     s->value = value;
@@ -14,7 +16,7 @@ void zem_init(zem_t *s, int value)
     pthread_cond_init(&s->cond, NULL);
 }
 
-void zem_down(zem_t *s)
+void zem_down(zem_t *s, char *msg)
 {
     pthread_mutex_lock(&s->lock);
     while (s->value <= 0)
@@ -22,18 +24,20 @@ void zem_down(zem_t *s)
         pthread_cond_wait(&s->cond, &s->lock);
     }
     s->value--;
+    printf("%s\n", msg);
     pthread_mutex_unlock(&s->lock);
 }
 
-void zem_up(zem_t *s)
+void zem_up(zem_t *s, char *msg)
 {
     pthread_mutex_lock(&s->lock);
     s->value++;
+    printf("%s\n", msg);
     pthread_cond_signal(&s->cond);
     pthread_mutex_unlock(&s->lock);
 }
 
-void zem_up_n(zem_t *s, int n)
+void zem_up_n(zem_t *s, int n, char *msg)
 {
     pthread_mutex_lock(&s->lock);
     for (int i = 0; i < n; i++)
@@ -41,10 +45,11 @@ void zem_up_n(zem_t *s, int n)
         s->value++;
         pthread_cond_signal(&s->cond);
     }
+    printf("%s\n", msg);
     pthread_mutex_unlock(&s->lock);
 }
 
-void zem_down_n(zem_t *s, int n)
+void zem_down_n(zem_t *s, int n, char *msg)
 {
     pthread_mutex_lock(&s->lock);
     for (int i = 0; i < n; i++)
@@ -55,6 +60,6 @@ void zem_down_n(zem_t *s, int n)
         }
         s->value--;
     }
-
+    printf("%s\n", msg);
     pthread_mutex_unlock(&s->lock);
 }
