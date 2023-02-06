@@ -22,12 +22,10 @@ void *adult(void *arg)
 {
 
     int *adult_id = (int *)arg;
-    printf("adult %d trying to enter the room\n", (*adult_id));
+    printf("adult %d entered the room\n", (*adult_id));
 
     // step 1
     zem_up_n(lock, 3);
-
-    printf("adult %d entered the room\n", (*adult_id));
 
     // step 2
     for (int i = 0; i < 10000000; i++)
