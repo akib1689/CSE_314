@@ -1,0 +1,350 @@
+diff --git a/.gitignore b/.gitignore
+index 07216f3..dc112f4 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -15,3 +15,4 @@ mkfs
+ kernel/kernel
+ user/usys.S
+ .gdbinit
++/.vscode
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index 39a99d7..d47337d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -132,6 +132,7 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_cowtest\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..564244d 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -63,6 +63,9 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++int             add_ref(void *);
++int             is_cow_page(pagetable_t, uint64);
++void*           alloc_cow(pagetable_t, uint64);             
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index 0699e7e..afbb6b6 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -22,11 +22,24 @@ struct {
+   struct spinlock lock;
+   struct run *freelist;
+ } kmem;
++// reference count of each page
++struct {
++  // lock for reference count 
++  // it is needed to avoide problems caused by two processes accessing the 
++  // same page at the same time
++  struct spinlock lock;
++  int count[PHYSTOP/PGSIZE];  // reference count of each page 
++                              // the PHYSTOP is the end of physical memory(defined in riscv.h)
++                              // size of the physical memory 
++                              // PGSIZE is the size of a page(defined in riscv.h)
++} ref;
++
+ 
+ void
+ kinit()
+ {
+   initlock(&kmem.lock, "kmem");
++  initlock(&ref.lock, "kref");
+   freerange(end, (void*)PHYSTOP);
+ }
+ 
+@@ -35,8 +48,11 @@ freerange(void *pa_start, void *pa_end)
+ {
+   char *p;
+   p = (char*)PGROUNDUP((uint64)pa_start);
+-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
++  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
++    ref.count[(uint64)p/PGSIZE] = 1;      // initialize the reference count to 1
++                                          // so that the reference count of the page never goes to negative
+     kfree(p);
++  }
+ }
+ 
+ // Free the page of physical memory pointed at by pa,
+@@ -51,15 +67,40 @@ kfree(void *pa)
+   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+     panic("kfree");
+ 
+-  // Fill with junk to catch dangling refs.
+-  memset(pa, 1, PGSIZE);
++  // printf("kfree\n");
++  // release the page whem the referemce count is 0
++  // printf("kfree\n");
++  acquire(&ref.lock);
++  if (ref.count[(uint64)pa/PGSIZE] < 0)
++  {
++    printf("the program should not be here\n");
++  }
++  
++  if (--ref.count[(uint64)pa/PGSIZE] == 0){
++    release(&ref.lock);
++    // Fill with junk to catch dangling refs.
++    memset(pa, 1, PGSIZE);
+ 
+-  r = (struct run*)pa;
++    r = (struct run*)pa;
+ 
+-  acquire(&kmem.lock);
+-  r->next = kmem.freelist;
+-  kmem.freelist = r;
+-  release(&kmem.lock);
++    acquire(&kmem.lock);
++    r->next = kmem.freelist;
++    kmem.freelist = r;
++    release(&kmem.lock);
++  } else{
++    // printf("kfree: ref.count[%d] = %d\n", (uint64)pa/PGSIZE, ref.count[(uint64)pa/PGSIZE]);
++    release(&ref.lock);
++  }
++  
++  // // Fill with junk to catch dangling refs.
++  // memset(pa, 1, PGSIZE);
++
++  // r = (struct run*)pa;
++
++  // acquire(&kmem.lock);
++  // r->next = kmem.freelist;
++  // kmem.freelist = r;
++  // release(&kmem.lock);
+ }
+ 
+ // Allocate one 4096-byte page of physical memory.
+@@ -70,13 +111,103 @@ kalloc(void)
+ {
+   struct run *r;
+ 
++  // printf("kalloc\n");
+   acquire(&kmem.lock);
+   r = kmem.freelist;
+-  if(r)
++  if(r){
+     kmem.freelist = r->next;
++    acquire(&ref.lock);
++    ref.count[(uint64)r/PGSIZE] = 1;
++    release(&ref.lock);
++  }
+   release(&kmem.lock);
+ 
++
++
+   if(r)
+     memset((char*)r, 5, PGSIZE); // fill with junk
+   return (void*)r;
+ }
++
++// add reference count to the page
++int add_ref(void *pa){
++  if ( (uint64)pa % PGSIZE != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
++    return -1;
++  acquire(&ref.lock);
++  ++ref.count[(uint64)pa/PGSIZE];
++  release(&ref.lock);
++  return 0;
++}
++
++// function to get the reference count of the page
++int get_ref_cnt(void *pa){
++  return ref.count[(uint64)pa/PGSIZE];
++}
++
++// function to check if the page is COW fork page or not
++// return 0 if the page is COW fork page else return -1
++int is_cow_page(pagetable_t pagetable, uint64 va){
++  if (va > MAXVA)
++    return -1;
++  
++  pte_t *pte = walk(pagetable, va, 0);
++
++  if (pte == 0)
++    return -1;
++  if ((*pte & PTE_V) == 0)
++    return -1;
++
++  if ((*pte & PTE_COW))
++    return 0;
++  else
++    return -1;
++}
++
++// function to allocate physical page for COW page
++void * alloc_cow(pagetable_t pagetable, uint64 va){
++  if (va % PGSIZE != 0)
++    return 0;
++
++  uint64 pa = walkaddr(pagetable, va);
++  if (pa == 0)
++    return 0;
++
++  pte_t *pte = walk(pagetable, va, 0);
++
++  if (get_ref_cnt((void*)pa) == 1){ 
++    // get the count reference of the current physical page
++    // if the count is 1, then we can directly change the page to writable 
++    // and mark the page as not COW page
++    *pte |= PTE_W;
++    *pte &= ~PTE_COW;
++    return (void*)pa;
++  } 
++
++  // there are multiple processes pointing to this physical page
++  // so, a new physical page is allocated for the virtual address to point to
++
++  char *mem;
++
++  if ((mem = kalloc()) == 0)
++    return 0;
++  
++  // copy the content of the parent page to the child page
++  memmove(mem, (char*)pa, PGSIZE);
++
++  // as the new physical page is allocated, 
++  // it is necessary to set the effective value of th e pte of the child process
++  *pte &= ~PTE_V;
++
++
++  // map the virtual address to the newly allocated physical page
++  // and mark the page as writable and not COW page
++  if (mappages(pagetable, va, PGSIZE, (uint64)mem, (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW) != 0) {
++    kfree(mem);
++    *pte |= PTE_V;
++    return 0;
++  }
++
++  // decrease the reference count of the parent page
++  kfree((void*)PGROUNDDOWN(pa));
++  return (void*)mem;
++}
+\ No newline at end of file
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index 20a01db..eecac82 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -344,6 +344,12 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ #define PTE_X (1L << 3)
+ #define PTE_U (1L << 4) // user can access
+ 
++
++
++#define PTE_COW (1L << 8) // available for supervisor use 
++                          // The RSW field is reserved for future use by the RISC-V architecture.
++                          // I used it to store if the page is COW or not.
++
+ // shift a physical address to the right place for a PTE.
+ #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
+ 
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..3cdb0c8 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -65,6 +65,17 @@ usertrap(void)
+     intr_on();
+ 
+     syscall();
++  } else if (r_scause() == 13 || r_scause() == 15) {
++    // page fault
++    uint64 va = r_stval();
++
++    if (va > p->sz
++        || is_cow_page(p->pagetable, va) != 0
++        || alloc_cow(p->pagetable, PGROUNDDOWN(va)) == 0) {
++      setkilled(p);
++    }
++    
++
+   } else if((which_dev = devintr()) != 0){
+     // ok
+   } else {
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 9f69783..a7868c4 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -305,30 +305,46 @@ uvmfree(pagetable_t pagetable, uint64 sz)
+ int
+ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+ {
+-  pte_t *pte;
+-  uint64 pa, i;
+-  uint flags;
+-  char *mem;
++  pte_t *pte;                             // page table entry
++  uint64 pa, i;                           // physical address, index
++  uint flags;                             // PTE flags (PTE_R, PTE_W, PTE_X)            
++  // char *mem;                              // allocated page (don't need it here)
+ 
+   for(i = 0; i < sz; i += PGSIZE){
+     if((pte = walk(old, i, 0)) == 0)
+-      panic("uvmcopy: pte should exist");
+-    if((*pte & PTE_V) == 0)
+-      panic("uvmcopy: page not present");
+-    pa = PTE2PA(*pte);
+-    flags = PTE_FLAGS(*pte);
+-    if((mem = kalloc()) == 0)
++      panic("uvmcopy: pte should exist");           // if pte is not present, panic
++    if((*pte & PTE_V) == 0){
++      panic("uvmcopy: page not present");    
++    }
++
++    pa = PTE2PA(*pte);                              // get physical address of parent page
++    flags = PTE_FLAGS(*pte);                        // get flags of parent page
++    
++    if (flags & PTE_W){                             // if the page is writable, 
++      flags = (flags | (PTE_COW)) & (~PTE_W);       // set the page as COW page and clear PTE_W flag
++      *pte = PA2PTE(pa) | flags;                    // update the page table entry
++    }
++
++
++    // don't call kalloc and memmove here 
++    // because we want to share the same page between parent and child
++    /*if((mem = kalloc()) == 0)
+       goto err;
+-    memmove(mem, (char*)pa, PGSIZE);
+-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+-      kfree(mem);
++    memmove(mem, (char*)pa, PGSIZE);                // copy parent page to child page
++    */
++    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){       // map child pagetable to pa page table with flags attached
++      //kfree(mem);
+       goto err;
+     }
++    
++    if (add_ref((void*)pa) != 0){
++      return -1;
++    }
+   }
+   return 0;
+ 
+  err:
+-  uvmunmap(new, 0, i / PGSIZE, 1);
++  uvmunmap(new, 0, i / PGSIZE, 1);                // unmap pages that have been mapped on failure
+   return -1;
+ }
+ 
+@@ -356,6 +372,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
+   while(len > 0){
+     va0 = PGROUNDDOWN(dstva);
+     pa0 = walkaddr(pagetable, va0);
++
++
++    // if it is a COW page, we need to allocate a new page for the child process
++    if (is_cow_page(pagetable, va0) == 0){
++      pa0 = (uint64) alloc_cow(pagetable, va0);
++    }
++
+     if(pa0 == 0)
+       return -1;
+     n = PGSIZE - (dstva - va0);
