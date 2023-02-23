@@ -1,0 +1,441 @@
+diff --git a/Makefile b/Makefile
+index 39a99d7..0e4a660 100644
+--- a/Makefile
++++ b/Makefile
+@@ -132,6 +132,7 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_sysinfotest\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..52b4e11 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -63,6 +63,8 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++int             kfree_memory(void);
++int             kfree_page(void);   
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -106,6 +108,7 @@ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
+ void            procdump(void);
++int             get_proc_count(void);
+ 
+ // swtch.S
+ void            swtch(struct context*, struct context*);
+@@ -173,6 +176,7 @@ uint64          walkaddr(pagetable_t, uint64);
+ int             copyout(pagetable_t, uint64, char *, uint64);
+ int             copyin(pagetable_t, char *, uint64, uint64);
+ int             copyinstr(pagetable_t, char *, uint64, uint64);
++int             num_live_pages(void);
+ 
+ // plic.c
+ void            plicinit(void);
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index 0699e7e..b12e92f 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -80,3 +80,26 @@ kalloc(void)
+     memset((char*)r, 5, PGSIZE); // fill with junk
+   return (void*)r;
+ }
++
++
++// Return the number of free pages in the system.
++int kfree_page(void)
++{
++  struct run *r;
++  int count = 0;
++  acquire(&kmem.lock);
++  r = kmem.freelist;
++  while(r)
++  {
++    count++;
++    r = r->next;
++  }
++  release(&kmem.lock);
++  return count;
++}
++
++// Return the memory size in bytes in the system.
++int kfree_memory(void)
++{
++  return kfree_page() * PGSIZE;
++}
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 959b778..27269a3 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -681,3 +681,18 @@ procdump(void)
+     printf("\n");
+   }
+ }
++
++
++// get the number of process that are currently running
++int get_proc_count(void){
++  struct proc *p;
++  int count = 0;
++  for(p = proc; p < &proc[NPROC]; p++){
++    acquire(&p->lock);
++    if(p->state != UNUSED){
++      count++;
++    }
++    release(&p->lock);
++  }
++  return count;
++}
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..95d73a1 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_sysinfo(void);
++
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +128,7 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_sysinfo] sys_sysinfo,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..2678245 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_sysinfo 22
++
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 1de184e..ff2d21c 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -89,3 +89,16 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++
++//----------------- sys_sysinfo() -----------------
++uint64
++sys_sysinfo(void)
++{
++  printf("\nsys_info system call prints:\n");
++  printf("free pages: %d\n", kfree_page());
++  printf("free memory: %d\n", kfree_memory());
++  printf("used pages: %d\n", num_live_pages());
++  printf("number of processes: %d\n\n", get_proc_count());
++  return 0;
++}
+\ No newline at end of file
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 9f69783..65f09c3 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -5,6 +5,8 @@
+ #include "riscv.h"
+ #include "defs.h"
+ #include "fs.h"
++#include "spinlock.h"
++#define MAXUPAGES 50
+ 
+ /*
+  * the kernel's page table.
+@@ -15,6 +17,16 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
+ 
+ extern char trampoline[]; // trampoline.S
+ 
++struct upage {
++  struct upage *next;
++};
++
++struct {
++  int size;
++  struct spinlock lock;
++  uint64 livelist [MAXUPAGES];
++} umem;
++
+ // Make a direct-map page table for the kernel.
+ pagetable_t
+ kvmmake(void)
+@@ -53,6 +65,11 @@ kvmmake(void)
+ void
+ kvminit(void)
+ {
++  initlock(&umem.lock, "umem");
++  umem.size = 0;
++  for (int i = 0; i < MAXUPAGES; i++) {
++    umem.livelist[i] = 0;
++  }
+   kernel_pagetable = kvmmake();
+ }
+ 
+@@ -186,6 +203,29 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
+     if(do_free){
+       uint64 pa = PTE2PA(*pte);
+       kfree((void*)pa);
++      // printf("freeing page %x\n", pa);
++      int num_page_swapped = 0;
++      // find the pa in umem
++      for(int i = 0; i < MAXUPAGES; i++){
++        // printf("umem.livelist[%d] = %d, pa = %d\n", i, umem.livelist[i], pa);
++        acquire(&umem.lock);
++        // printf("umem.livelist[%d] = %d, pa = %d\n", i, umem.livelist[i], pa);
++        if(umem.livelist[i] == pa){
++          // printf("found page to swap out\n");
++          umem.livelist[i] = 0;
++          umem.size--;
++          release(&umem.lock);
++          num_page_swapped++;
++          break;
++        }
++        release(&umem.lock);
++        if (num_page_swapped  && i < MAXUPAGES - 1) {
++          acquire(&umem.lock);
++          umem.livelist[i] = umem.livelist[i+1];
++          umem.livelist[i+1] = 0;
++          release(&umem.lock);
++        }
++      }
+     }
+     *pte = 0;
+   }
+@@ -211,13 +251,23 @@ void
+ uvmfirst(pagetable_t pagetable, uchar *src, uint sz)
+ {
+   char *mem;
++  // struct upage *r;
+ 
+   if(sz >= PGSIZE)
+     panic("uvmfirst: more than a page");
++  
++  // r = (struct upage*)kalloc();
+   mem = kalloc();
+   memset(mem, 0, PGSIZE);
+   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
+   memmove(mem, src, sz);
++
++  // add the r to the live list
++  acquire(&umem.lock);
++  umem.livelist[umem.size] = (uint64)mem;
++  umem.size++;
++  // printf("uvmfirst: umem.size = %d\n", umem.size);
++  release(&umem.lock);
+ }
+ 
+ // Allocate PTEs and physical memory to grow process from oldsz to
+@@ -244,6 +294,16 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
+       uvmdealloc(pagetable, a, oldsz);
+       return 0;
+     }
++    // add the page to the live list
++    acquire(&umem.lock);
++    if (umem.size < MAXUPAGES) {
++      umem.livelist[umem.size] = (uint64)mem;
++      umem.size++;
++      // printf("uvmalloc: umem.livelist[%d] = %x\n", umem.size-1, umem.livelist[umem.size-1]);
++      // printf("uvmalloc: umem.size = %d\n", umem.size);
++    }
++    release(&umem.lock);
++    
+   }
+   return newsz;
+ }
+@@ -324,6 +384,16 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+       kfree(mem);
+       goto err;
+     }
++
++    // add the page to the live list
++    acquire(&umem.lock);
++    if (umem.size < MAXUPAGES) {
++      umem.livelist[umem.size] = (uint64)mem;
++      umem.size++;
++      // printf("uvmcopy: umem.livelist[%d] = %x\n", umem.size-1, umem.livelist[umem.size-1]);
++      // printf("uvmcopy: umem.size = %d\n", umem.size);
++    }
++    release(&umem.lock);
+   }
+   return 0;
+ 
+@@ -437,3 +507,12 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+     return -1;
+   }
+ }
++
++// gives the live page of the user
++int num_live_pages(void) {
++  int i;
++  acquire(&umem.lock);
++  i = umem.size;
++  release(&umem.lock);
++  return i;
++}
+\ No newline at end of file
+diff --git a/user/sysinfotest.c b/user/sysinfotest.c
+new file mode 100644
+index 0000000..a38e6d4
+--- /dev/null
++++ b/user/sysinfotest.c
+@@ -0,0 +1,122 @@
++#include "kernel/types.h"
++#include "kernel/riscv.h"
++#include "user/user.h"
++
++
++void
++sinfo() {
++  if (sysinfo() < 0) {
++    printf("FAIL: sysinfo failed");
++    exit(1);
++  }
++}
++
++
++void
++testmem() {
++  printf("\n\t\t\tTesting memory\n");
++  printf("\nInitial State\n");
++  sinfo();
++
++  printf("Using up 5 more page (4096 bytes).\nFreemem should reduce by that much!\n");
++  if((uint64)sbrk(5 * PGSIZE) == 0xffffffffffffffff){
++    printf("sbrk failed");
++    exit(1);
++  }
++
++  sinfo();
++
++  printf("Giving back that one more page to the pool (4096 bytes).\nFreemem should increase!\n");
++  
++  if((uint64)sbrk(-PGSIZE) == 0xffffffffffffffff){
++    printf("sbrk failed");
++    exit(1);
++  }
++
++  sinfo();
++
++
++  printf("Using up 5 more page (4096 bytes).\nFreemem should reduce by that much!\n");
++
++  if((uint64)sbrk(5 * PGSIZE) == 0xffffffffffffffff){
++    printf("sbrk failed");
++    exit(1);
++  }
++
++  sinfo();
++
++  printf("Giving back 6 page to the pool (4096 bytes).\nFreemem should increase!\n");
++
++  if((uint64)sbrk(-6 * PGSIZE) == 0xffffffffffffffff){
++    printf("sbrk failed");
++    exit(1);
++  }
++
++  sinfo();
++
++  printf("Giving back 1 page to the pool (4096 bytes).\nFreemem should increase!\n");
++
++  if((uint64)sbrk(-PGSIZE) == 0xffffffffffffffff){
++    printf("sbrk failed");
++    exit(1);
++  }
++
++  sinfo();
++
++
++  printf("Giving back 1 page to the pool (4096 bytes).\nFreemem should increase!\n");
++
++  if((uint64)sbrk(-PGSIZE) == 0xffffffffffffffff){
++    printf("sbrk failed");
++    exit(1);
++  }
++
++  sinfo();
++
++
++  printf("Giving back 1 page to the pool (4096 bytes).\nFreemem should increase!\n");
++
++  if((uint64)sbrk(-PGSIZE) == 0xffffffffffffffff){
++    printf("sbrk failed");
++    exit(1);
++  }
++
++  sinfo();
++
++
++}
++
++void testproc() {
++  int status;
++  int pid;
++
++  printf("\n\t\t\tTesting nproc\n");
++  printf("\nInitial State\n");
++  sinfo();
++
++  pid = fork();
++  if(pid < 0){
++    printf("sysinfotest: fork failed\n");
++    exit(1);
++  }
++  if(pid == 0){  // inside the child process
++    printf("Created one new process. So nproc should increase by 1.");
++    sinfo();
++    exit(0);
++  }
++
++  wait(&status); // wait for the created child process to end
++  printf("Created process ended. So nproc should go back to initial value.");
++  sinfo(); 
++}
++
++
++int
++main(int argc, char *argv[])
++{
++  printf("sysinfotest: start\n");
++  testmem();
++  // testproc();
++  printf("sysinfotest: done\n");
++  exit(0);
++}
+diff --git a/user/user.h b/user/user.h
+index 4d398d5..a800dfe 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,7 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int sysinfo(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..4f1f768 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,4 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("sysinfo");

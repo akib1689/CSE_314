@@ -35,7 +35,7 @@ index a3c962b..564244d 100644
  // log.c
  void            initlog(int, struct superblock*);
 diff --git a/kernel/kalloc.c b/kernel/kalloc.c
-index 0699e7e..afbb6b6 100644
+index 0699e7e..26aa44d 100644
 --- a/kernel/kalloc.c
 +++ b/kernel/kalloc.c
 @@ -22,11 +22,24 @@ struct {
@@ -124,7 +124,7 @@ index 0699e7e..afbb6b6 100644
  }
  
  // Allocate one 4096-byte page of physical memory.
-@@ -70,13 +111,103 @@ kalloc(void)
+@@ -70,13 +111,105 @@ kalloc(void)
  {
    struct run *r;
  
@@ -132,16 +132,19 @@ index 0699e7e..afbb6b6 100644
    acquire(&kmem.lock);
    r = kmem.freelist;
 -  if(r)
-+  if(r){
++  if(r) {
      kmem.freelist = r->next;
+-  release(&kmem.lock);
++    release(&kmem.lock);
++
++    // add the reference count of the page
 +    acquire(&ref.lock);
 +    ref.count[(uint64)r/PGSIZE] = 1;
 +    release(&ref.lock);
++  } else {
++    release(&kmem.lock);
 +  }
-   release(&kmem.lock);
  
-+
-+
    if(r)
      memset((char*)r, 5, PGSIZE); // fill with junk
    return (void*)r;
