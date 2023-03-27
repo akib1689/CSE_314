@@ -1,8 +1,7 @@
 /**
  * This implementation of the reader-writer lock is a writer-preference lock.
  * if there are any writers waiting, then readers will have to wait.
-*/
-
+ */
 
 #include "rwlock.h"
 
@@ -24,7 +23,7 @@ void ReaderLock(read_write_lock *rw) {
     // after waking up, the mutex is locked again
     pthread_cond_wait(&rw->read, &rw->lock);
   }
-  // there is no writer or writer waiting, 
+  // there is no writer or writer waiting,
   // so we can increment the reader count
   rw->readers++;
 
@@ -43,7 +42,7 @@ void WriterLock(read_write_lock *rw) {
     pthread_cond_wait(&rw->write, &rw->lock);
   }
   // there is no reader or writer,
-  // so we can increment the writer count and 
+  // so we can increment the writer count and
   // decrement the writer waiting count
   rw->write_waiters--;
   rw->writers++;
@@ -51,11 +50,11 @@ void WriterLock(read_write_lock *rw) {
 }
 
 void ReaderUnlock(read_write_lock *rw) {
-  // lock the mutex 
+  // lock the mutex
   pthread_mutex_lock(&rw->lock);
   rw->readers--;
   if (rw->readers == 0 && rw->write_waiters > 0) {
-    // if there are no readers and there are writers waiting, 
+    // if there are no readers and there are writers waiting,
     // then wake up a writer
     pthread_cond_signal(&rw->write);
   }

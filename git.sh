@@ -1,5 +1,5 @@
 #check the number of arguments as message
-if [ $# -eq 0]
+if [ $# -eq 1]
 then 
     echo "Please input commit message....."
 else

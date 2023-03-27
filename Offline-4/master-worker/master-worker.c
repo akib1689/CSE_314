@@ -40,7 +40,8 @@ void *generate_requests_loop(void *data)
       pthread_mutex_unlock(&lock);
       break;
     }
-    while (curr_buf_size == max_buf_size) {
+    while (curr_buf_size == max_buf_size)
+    {
       // printf("producer waiting to fill\n");
       pthread_cond_wait(&can_fill, &lock);
     }
@@ -67,15 +68,18 @@ void *consume_requests_loop(void *data)
   while (1)
   {
     pthread_mutex_lock(&lock);
-    if (item_to_consume >= total_items){
+    if (item_to_consume >= total_items)
+    {
       pthread_mutex_unlock(&lock);
       break;
     }
-    while( curr_buf_size == 0 ){
+    while (curr_buf_size == 0)
+    {
       // printf("consumer waiting to take\n");
       pthread_cond_wait(&can_take, &lock);
     }
-    if (item_to_consume >= total_items){
+    if (item_to_consume >= total_items)
+    {
       pthread_mutex_unlock(&lock);
       break;
     }

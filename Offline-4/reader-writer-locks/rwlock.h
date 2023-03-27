@@ -6,24 +6,24 @@
  * 3. rwlock_release_readlock       // release the read lock
  * 4. rwlock_acquire_writelock      // acquire the write lock
  * 5. rwlock_release_writelock      // release the write lock
- * 
- * 
+ *
+ *
  * two implementations of the lock are provided:
- * 1. reader-preference lock        // readers have priority 
+ * 1. reader-preference lock        // readers have priority
  * 2. writer-preference lock        // writers have priority
- * 
+ *
  * @author:  Akib - 1805086
-*/
+ */
 
 #ifndef RWLOCK_H
 #define RWLOCK_H
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <unistd.h>
-#include <iostream>
 
+#include <iostream>
 
 struct read_write_lock {
   pthread_mutex_t lock;
@@ -34,10 +34,10 @@ struct read_write_lock {
   int write_waiters;
 };
 
-void InitalizeReadWriteLock(struct read_write_lock * rw);
-void ReaderLock(struct read_write_lock * rw);
-void ReaderUnlock(struct read_write_lock * rw);
-void WriterLock(struct read_write_lock * rw);
-void WriterUnlock(struct read_write_lock * rw);
+void InitalizeReadWriteLock(struct read_write_lock* rw);
+void ReaderLock(struct read_write_lock* rw);
+void ReaderUnlock(struct read_write_lock* rw);
+void WriterLock(struct read_write_lock* rw);
+void WriterUnlock(struct read_write_lock* rw);
 
 #endif

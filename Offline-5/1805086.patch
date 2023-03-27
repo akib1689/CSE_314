@@ -41,7 +41,7 @@ index 39a99d7..92362de 100644
  
  QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 diff --git a/kernel/defs.h b/kernel/defs.h
-index a3c962b..a0e58e2 100644
+index a3c962b..d70ad69 100644
 --- a/kernel/defs.h
 +++ b/kernel/defs.h
 @@ -8,6 +8,8 @@ struct spinlock;
@@ -91,7 +91,7 @@ index a3c962b..a0e58e2 100644
  
  // swtch.S
  void            swtch(struct context*, struct context*);
-@@ -154,6 +173,13 @@ void            uartintr(void);
+@@ -154,6 +173,14 @@ void            uartintr(void);
  void            uartputc(int);
  void            uartputc_sync(int);
  int             uartgetc(void);
@@ -101,11 +101,12 @@ index a3c962b..a0e58e2 100644
 +void            lremovepage(pagetable_t);
 +void            lremovepagepa(uint64);
 +int             num_live_pages(void);
-+int             swapinpage(pagetable_t, uint64, int);
++int             swapinpage(pagetable_t, uint64);
++int             swapinupage(pagetable_t, uint64);
  
  // vm.c
  void            kvminit(void);
-@@ -174,6 +200,7 @@ int             copyout(pagetable_t, uint64, char *, uint64);
+@@ -174,6 +201,7 @@ int             copyout(pagetable_t, uint64, char *, uint64);
  int             copyin(pagetable_t, char *, uint64, uint64);
  int             copyinstr(pagetable_t, char *, uint64, uint64);
  
@@ -113,8 +114,74 @@ index a3c962b..a0e58e2 100644
  // plic.c
  void            plicinit(void);
  void            plicinithart(void);
+diff --git a/kernel/file.c b/kernel/file.c
+index 25fa226..172c820 100644
+--- a/kernel/file.c
++++ b/kernel/file.c
+@@ -108,15 +108,20 @@ fileread(struct file *f, uint64 addr, int n)
+ {
+   int r = 0;
+ 
+-  if(f->readable == 0)
++  if(f->readable == 0){
++    printf("fileread: not readable\n");
+     return -1;
++  }
+ 
+   if(f->type == FD_PIPE){
+     r = piperead(f->pipe, addr, n);
+   } else if(f->type == FD_DEVICE){
+-    if(f->major < 0 || f->major >= NDEV || !devsw[f->major].read)
++    if(f->major < 0 || f->major >= NDEV || !devsw[f->major].read){
++      printf("fileread: not a valid device\n");
+       return -1;
++    }
+     r = devsw[f->major].read(1, addr, n);
++    // printf("fileread: read %d bytes from device\n", r);
+   } else if(f->type == FD_INODE){
+     ilock(f->ip);
+     if((r = readi(f->ip, 1, addr, f->off, n)) > 0)
+@@ -125,7 +130,7 @@ fileread(struct file *f, uint64 addr, int n)
+   } else {
+     panic("fileread");
+   }
+-
++  // printf("fileread: read %d bytes\n", r);
+   return r;
+ }
+ 
+@@ -136,14 +141,19 @@ filewrite(struct file *f, uint64 addr, int n)
+ {
+   int r, ret = 0;
+ 
+-  if(f->writable == 0)
++  if(f->writable == 0){
++    printf("filewrite: not writable\n");
+     return -1;
++  }
+ 
+   if(f->type == FD_PIPE){
+     ret = pipewrite(f->pipe, addr, n);
+   } else if(f->type == FD_DEVICE){
+-    if(f->major < 0 || f->major >= NDEV || !devsw[f->major].write)
++    if(f->major < 0 || f->major >= NDEV || !devsw[f->major].write){
++      printf("filewrite: not a valid device\n");
+       return -1;
++    }
++    // printf("filewrite: writing to device\n");
+     ret = devsw[f->major].write(1, addr, n);
+   } else if(f->type == FD_INODE){
+     // write a few blocks at a time to avoid exceeding
+@@ -168,6 +178,7 @@ filewrite(struct file *f, uint64 addr, int n)
+ 
+       if(r != n1){
+         // error from writei
++        printf("filewrite: writei failed\n");
+         break;
+       }
+       i += r;
 diff --git a/kernel/fs.c b/kernel/fs.c
-index c6bab15..2d9b419 100644
+index c6bab15..7ef585c 100644
 --- a/kernel/fs.c
 +++ b/kernel/fs.c
 @@ -62,7 +62,7 @@ bzero(int dev, int bno)
@@ -135,6 +202,14 @@ index c6bab15..2d9b419 100644
  bfree(int dev, uint b)
  {
    struct buf *bp;
+@@ -487,6 +487,7 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
+     m = min(n - tot, BSIZE - off%BSIZE);
+     if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
+       brelse(bp);
++      printf("readi: copyout failed\n");
+       tot = -1;
+       break;
+     }
 diff --git a/kernel/kalloc.c b/kernel/kalloc.c
 index 0699e7e..1aa3e0e 100644
 --- a/kernel/kalloc.c
@@ -371,10 +446,10 @@ index 0699e7e..1aa3e0e 100644
 +}
 diff --git a/kernel/livepage.c b/kernel/livepage.c
 new file mode 100644
-index 0000000..d03f88e
+index 0000000..972240d
 --- /dev/null
 +++ b/kernel/livepage.c
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,411 @@
 +// the file for handling the livepage
 +#include "types.h"
 +#include "riscv.h"
@@ -383,7 +458,7 @@ index 0000000..d03f88e
 +#include "defs.h"
 +#include "fs.h"
 +#include "swap.h"
-+#define MAXLIVEPAGE 32
++#define MAXLIVEPAGE 50
 +
 +// the struct for the livepage
 +struct livepage {
@@ -500,12 +575,67 @@ index 0000000..d03f88e
 +  return index;
 +}
 +
++int swapinupage(pagetable_t pagetable, uint64 va){
++  // rounddown the va
++  va = PGROUNDDOWN(va);
++
++  // find the pte of the page
++  pte_t *pte = walk(pagetable, va, 0);
++  if (*pte == 0){
++    // the page is not present in the page table
++    return -1;
++  }
++
++  int flags = PTE_FLAGS(*pte);
++  if ((flags & PTE_PG) && (flags & PTE_U)){
++    // the page is in the swap file and the page is user page
++    // get the swap struct
++    struct swap *s = (struct swap*)PG2SWAP(*pte);
++    char *mem = kalloc();
++    if (mem == 0) {
++      printf("usertrap(): out of memory\n");
++      return -1;
++    }
++
++    // read the page from the swap file
++    swapin(mem, s);
++    int flags = PTE_FLAGS(*pte);
++    flags &= ~PTE_PG;
++    flags |= PTE_V;
++    flags &= ~PTE_COW;
++    mappages(pagetable, va, PGSIZE, (uint64)mem, flags);
++    laddpage(pagetable, va, (uint64)mem);
++    if (s->ref_count > 1){
++      // decrease the ref count
++      s->ref_count--;
++    } else {
++      // free the swap
++      swapfree(s);
++    }
++    // printf("swapinupage: user page va = %p, pa = %p\n", va, mem);
++
++    return 0;
++  }
++
++  return -1;
++  
++}
 +
 +// returns 0 on success
 +// returns -1 on failure
-+int swapinpage(pagetable_t pagetable, uint64 va, int ref){
++int swapinpage(pagetable_t pagetable, uint64 va){
++  // rounddown the va
++  va = PGROUNDDOWN(va);
++
 +  // find the physical address of the page
 +  pte_t *pte = walk(pagetable, va, 0);
++
++  if (*pte == 0){
++    // the page is not present in the page table
++    return -1;
++  }
++
++  uint64 pa = PTE2PA(*pte);
 +
 +  // find the flags of the page
 +  int flags = PTE_FLAGS(*pte);
@@ -533,16 +663,33 @@ index 0000000..d03f88e
 +      swapfree(s);
 +    }
 +
-+    // if ref is set to 1 then increase the ref count in the swap structure
-+    if (ref == 1){
-+      s->ref_count++;
-+    }
-+
 +    return 0;
 +    
 +  } else {
-+    // setkilled(myproc());
-+    return -1;
++    if (flags & PTE_COW && flags & PTE_V) {
++        // allocate a new page
++        char *mem = kalloc();
++        if (mem == 0) {
++          printf("usertrap(): out of memory\n");
++          return -1;
++        }
++        // copy the data from the old page to the new page
++        memmove(mem, (char*)pa, PGSIZE);
++        // set the flag bits 
++        flags &= ~PTE_COW;
++        flags |= PTE_W;
++        uvmunmap(pagetable, va, 1, 0);
++        // decrease the ref count 
++        dec_ref((void *)pa);
++        // map the new page to the faulting address
++        mappages(pagetable, va, PGSIZE, (uint64)mem, flags);
++        laddpage(pagetable, va, (uint64)mem);
++
++        return 0;
++
++      }
++
++      return -1;
 +  }
 +
 +}
@@ -1008,7 +1155,7 @@ index 1de184e..ca84d60 100644
 +}
 \ No newline at end of file
 diff --git a/kernel/trap.c b/kernel/trap.c
-index 512c850..0f0d162 100644
+index 512c850..1214520 100644
 --- a/kernel/trap.c
 +++ b/kernel/trap.c
 @@ -2,6 +2,8 @@
@@ -1020,98 +1167,19 @@ index 512c850..0f0d162 100644
  #include "spinlock.h"
  #include "proc.h"
  #include "defs.h"
-@@ -65,6 +67,148 @@ usertrap(void)
+@@ -65,6 +67,34 @@ usertrap(void)
      intr_on();
  
      syscall();
 +  } else if (r_scause() == 15) {
 +    // page fault on load
 +    uint64 va = r_stval();
-+    if (va >= p->sz) {
-+      printf("usertrap(): page fault va %p is above sz %p\n", va, p->sz);
-+      setkilled(p);
-+      goto end;
-+    }
-+    uint64 fault_va = PGROUNDDOWN(va);
 +
-+    // get the pte for the faulting address
-+    pte_t *pte = walk(p->pagetable, fault_va, 0);
-+
-+    // todo : this might not work if not change the *pte to pte
-+    if (*pte == 0) {
++    if (swapinpage(p->pagetable, va) != 0)
++    {
 +      printf("usertrap(): page fault va %p is not mapped\n", va);
 +      setkilled(p);
 +      goto end;
-+    }
-+
-+    uint64 pa = PTE2PA(*pte);
-+    int flags = PTE_FLAGS(*pte);
-+
-+    // check for pg bit 
-+    if (flags & PTE_PG){
-+      // on 
-+      struct swap *s = (struct swap*)PG2SWAP(*pte);
-+      char *mem = kalloc();
-+      if (mem == 0) {
-+        printf("usertrap(): out of memory\n");
-+        setkilled(p);
-+        goto end;
-+      }
-+      // read the page from the swap file
-+      swapin(mem, s);
-+
-+
-+      // update the flags
-+      int flags = PTE_FLAGS(*pte);
-+      flags &= ~PTE_PG;
-+      flags |= PTE_V;
-+      flags &= ~PTE_COW;
-+      flags |= PTE_W;
-+      
-+      // update the value of the pte
-+      *pte = 0;
-+      sfence_vma();
-+      mappages(p->pagetable, fault_va, PGSIZE, (uint64)mem, flags);
-+      laddpage(p->pagetable, fault_va, (uint64)mem);
-+      if (s->ref_count > 1){
-+        // decrease the ref count
-+        s->ref_count--;
-+      } else {
-+        // free the swap
-+        swapfree(s);
-+      }
-+
-+    } else {
-+      // off
-+      // check for pte cow is 1 and pte v is 1
-+      if (flags & PTE_COW && flags & PTE_V) {
-+        // allocate a new page
-+        char *mem = kalloc();
-+        if (mem == 0) {
-+          printf("usertrap(): out of memory\n");
-+          setkilled(p);
-+          goto end;
-+        }
-+        // copy the data from the old page to the new page
-+        memmove(mem, (char*)pa, PGSIZE);
-+        // set the flag bits 
-+        flags &= ~PTE_COW;
-+        flags |= PTE_W;
-+        uvmunmap(p->pagetable, fault_va, 1, 0);
-+        // decrease the ref count 
-+        dec_ref((void *)pa);
-+        // map the new page to the faulting address
-+        mappages(p->pagetable, fault_va, PGSIZE, (uint64)mem, flags);
-+        laddpage(p->pagetable, fault_va, (uint64)mem);
-+
-+      }else{
-+        // ! error this page is neither cow nor pg 
-+        printf("usertrap(): page fault va %p is not cow or pg\n", va);
-+        setkilled(p);
-+        goto end;
-+      }
-+
-+          
 +    }
 +
 +  } else if (r_scause() == 13) {
@@ -1124,52 +1192,17 @@ index 512c850..0f0d162 100644
 +      goto end;
 +    }
 +
-+    uint64 fault_va = PGROUNDDOWN(va);
-+    // get the pte for the faulting address
-+    pte_t *pte = walk(p->pagetable, fault_va, 0);
-+    if (*pte == 0) {
++    if (swapinupage(p->pagetable, va) != 0)
++    {
 +      printf("usertrap(): page fault va %p is not mapped\n", va);
 +      setkilled(p);
 +      goto end;
-+    }
-+    if ((*pte & PTE_PG) && (*pte & PTE_U) ) {
-+      // the page is in the swap file and the page is user page
-+      // get the swap struct
-+      struct swap *s = (struct swap*)PG2SWAP(*pte);
-+      char *mem = kalloc();
-+      if (mem == 0) {
-+        printf("usertrap(): out of memory\n");
-+        setkilled(p);
-+        goto end;
-+      }
-+
-+      // read the page from the swap file
-+      swapin(mem, s);
-+      int flags = PTE_FLAGS(*pte);
-+      flags &= ~PTE_PG;
-+      flags |= PTE_V;
-+      flags &= ~PTE_COW;
-+      mappages(p->pagetable, fault_va, PGSIZE, (uint64)mem, flags);
-+      laddpage(p->pagetable, fault_va, (uint64)mem);
-+      if (s->ref_count > 1){
-+        // decrease the ref count
-+        s->ref_count--;
-+      } else {
-+        // free the swap
-+        swapfree(s);
-+      }
-+    } else {
-+      // ! error this page is neither cow nor pg 
-+      printf("usertrap(): page fault va %p is not cow or pg\n", va);
-+      setkilled(p);
-+      goto end;
-+    }
-+    
++    }  
 +    
    } else if((which_dev = devintr()) != 0){
      // ok
    } else {
-@@ -72,7 +216,7 @@ usertrap(void)
+@@ -72,7 +102,7 @@ usertrap(void)
      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
      setkilled(p);
    }
@@ -1179,7 +1212,7 @@ index 512c850..0f0d162 100644
      exit(-1);
  
 diff --git a/kernel/vm.c b/kernel/vm.c
-index 9f69783..494b2d1 100644
+index 9f69783..981eebe 100644
 --- a/kernel/vm.c
 +++ b/kernel/vm.c
 @@ -5,6 +5,7 @@
@@ -1385,10 +1418,11 @@ index 9f69783..494b2d1 100644
    return -1;
  }
  
-@@ -356,6 +447,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
+@@ -356,8 +447,33 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
    while(len > 0){
      va0 = PGROUNDDOWN(dstva);
      pa0 = walkaddr(pagetable, va0);
+-    if(pa0 == 0)
 +
 +
 +    // if it is a COW page, we need to allocate a new page for the child process
@@ -1396,20 +1430,40 @@ index 9f69783..494b2d1 100644
 +      pa0 = (uint64) alloc_cow(pagetable, va0);
 +    }
 +
-     if(pa0 == 0)
++    // if the page is swapped out, we need to swap in the page
++    // at first find the pte of the page
++    pte_t *pte = walk(pagetable, va0, 0);
++    if (*pte & PTE_PG){
++      // panic("copyout: swapped out page copying\n");
++      // swap in the page
++      if (swapinupage(pagetable, va0) == -1){
++        printf("copyout: swapinupage failed\n");
++        return -1;
++      }
++
++      // swap in successfull
++      // now only update the pa0
++      pa0 = walkaddr(pagetable, va0);  
++    }
++
++    if(pa0 == 0){
++      printf("copyout: walkaddr failed\n");
        return -1;
++    }
      n = PGSIZE - (dstva - va0);
-@@ -437,3 +535,4 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+     if(n > len)
+       n = len;
+@@ -437,3 +553,4 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
      return -1;
    }
  }
 +
 diff --git a/user/cowpagingtest.c b/user/cowpagingtest.c
 new file mode 100644
-index 0000000..4c1ae88
+index 0000000..953fef8
 --- /dev/null
 +++ b/user/cowpagingtest.c
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,62 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -1441,19 +1495,26 @@ index 0000000..4c1ae88
 +  }
 +  for (int i = 0; i < 409600; i+=4096)
 +  {
-+    printf("%c\n",*a);
++    printf("%c",*a);
 +    a-=4096;
 +  }
++  printf("\n");
++
++
++  // ! this protion of the test is not needed in the assignment 
++  // ! as the assignment didn't tell to implement the read and write system calls
++  // ! it is onle here to flex the read and write system calls
 +  
 +  printf("Before open\n");
 +  int fd = open("file", O_CREATE|O_RDWR);
-+  printf("After open\n");
++  printf("After open fd = %d\n", fd);
 +  int n=write(fd, white_to_file, 4096);
 +  char *b =(char *) (20*4096 + 30);
 +  close(fd);
 +  fd = open("file", O_RDWR);
 +  int m=read(fd, b, 4096);
 +
++  printf("After read\n");
 +  printf("%d %d %d\n", fd, n, m);
 +  for(int i=0;i<4096;i++)
 +  {
